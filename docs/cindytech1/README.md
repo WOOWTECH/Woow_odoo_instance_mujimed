@@ -398,20 +398,21 @@ OpenClaw Gateway 是 18 個 Agents 執行 AI 任務的核心引擎。
 | 目錄 | 用途 |
 |------|------|
 | `/mnt/openclaw-agents/` | Agent 主目錄（symlink 到 `~/.openclaw/agents`） |
-| `/mnt/openclaw-agents/_workspace/` | 工作空間（SOUL.md、MEMORY.md 等） |
+| `/mnt/openclaw-agents/_workspace/` | 預設工作空間（main agent 使用） |
+| `/mnt/openclaw-agents/_workspace-{agentId}/` | 各 Agent 專屬工作空間（共 17 個，如 `_workspace-r1-policy`） |
 | `/mnt/openclaw-agents/_managed-skills/` | 已安裝的技能 |
 | `/mnt/openclaw-agents/_memory/` | Agent 記憶資料 |
 | `/mnt/openclaw-agents/_cron/` | 排程任務設定 |
 | `/mnt/openclaw-agents/_config/` | 應用程式設定 |
-| `/mnt/openclaw-agents/_openclaw.json` | Gateway 主設定檔（symlink 到 `~/.openclaw/openclaw.json`） |
+| `/mnt/openclaw-agents/_openclaw.json` | Gateway 主設定檔，包含 19 個 Agent 定義（main + test-poke + 17 ESGTimes agents） |
 
 > **注意**：Pod 重啟後所有 PVC 資料保留，包括 Agent 設定、記憶、技能和排程。Gateway 主設定檔（`openclaw.json`）直接 symlink 到 PVC，透過 Web GUI 修改設定會立即持久化。
 
 ---
 
-### 步驟 5：Adapter 配置
+### 步驟 5：Adapter 配置與 1:1 Agent Mapping
 
-所有 18 個 Agents 使用統一的 `openclaw_gateway` adapter 連線到 OpenClaw Gateway：
+每個 Paperclip Agent 都有專屬的 OpenClaw Agent，實現 **1:1 獨立 workspace 架構**。這確保每個 Agent 在 Gateway 中擁有獨立的對話空間、記憶和設定。
 
 #### 連線參數
 
@@ -421,17 +422,58 @@ OpenClaw Gateway 是 18 個 Agents 執行 AI 任務的核心引擎。
 | WebSocket URL | `ws://openclaw-gateway-svc:18789` |
 | Token | `cindytech` |
 | Scopes | `operator.admin, operator.read, operator.write, operator.pairing` |
+| Paperclip API URL | `http://paperclip-svc:3100`（Gateway 回寫結果用） |
+
+#### 1:1 Agent Mapping（Paperclip ↔ OpenClaw）
+
+每個 Paperclip Agent 的 `adapter_config` 中設有 `agentId`，對應到 OpenClaw Gateway 中的獨立 Agent：
+
+| Paperclip Agent | OpenClaw agentId | Workspace |
+|----------------|-----------------|-----------|
+| 總編輯長 M1 | `m1-editor-chief` | `_workspace-m1-editor-chief` |
+| 內容主編 M2 | `m2-content-editor` | `_workspace-m2-content-editor` |
+| 營運主編 M3 | `m3-ops-editor` | `_workspace-m3-ops-editor` |
+| 政策法規研究員 R1 | `r1-policy` | `_workspace-r1-policy` |
+| 企業案例研究員 R2 | `r2-enterprise` | `_workspace-r2-enterprise` |
+| 數據趨勢研究員 R3 | `r3-data` | `_workspace-r3-data` |
+| 國際媒體掃描員 R4 | `r4-international` | `_workspace-r4-international` |
+| 台灣在地線人 R5 | `r5-taiwan` | `_workspace-r5-taiwan` |
+| 新聞記者風寫手 W1 | `w1-news` | `_workspace-w1-news` |
+| 知識型教師風寫手 W2 | `w2-teacher` | `_workspace-w2-teacher` |
+| 學術分析師風寫手 W3 | `w3-analyst` | `_workspace-w3-analyst` |
+| 說故事風寫手 W4 | `w4-storyteller` | `_workspace-w4-storyteller` |
+| 意見領袖風寫手 W5 | `w5-opinion` | `_workspace-w5-opinion` |
+| 數據新聞風寫手 W6 | `w6-data-news` | `_workspace-w6-data-news` |
+| 簡潔速讀風寫手 W7 | `w7-quickread` | `_workspace-w7-quickread` |
+| 內容品質審查員 Q1 | `q1-quality` | `_workspace-q1-quality` |
+| ESG 專業顧問 Q2 | `q2-esg-expert` | `_workspace-q2-esg-expert` |
+
+> **重要**：在 OpenClaw Console（Nerve UI）的 Agents 頁面中，可以從下拉選單選擇任何一個 Agent 進行獨立對話。每個 Agent 保持各自的角色性格和設置。
 
 #### Adapter Config JSON 範例
 
 ```json
 {
-  "adapter": "openclaw_gateway",
   "url": "ws://openclaw-gateway-svc:18789",
-  "token": "cindytech",
-  "scopes": "operator.admin, operator.read, operator.write, operator.pairing"
+  "role": "operator",
+  "scopes": ["operator.admin", "operator.read", "operator.write", "operator.pairing"],
+  "headers": {"x-openclaw-token": "cindytech"},
+  "waitTimeoutMs": 120000,
+  "sessionKeyStrategy": "issue",
+  "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----",
+  "autoPairOnFirstConnect": true,
+  "paperclipApiUrl": "http://paperclip-svc:3100",
+  "agentId": "r1-policy"
 }
 ```
+
+| 配置項目 | 說明 |
+|---------|------|
+| `agentId` | 對應到 OpenClaw Gateway 中的 Agent ID（1:1 mapping 的關鍵） |
+| `paperclipApiUrl` | Paperclip API 的內部 K8s URL（必須設定，否則 Agent 會用 localhost 導致連線失敗） |
+| `devicePrivateKeyPem` | Ed25519 private key（每個 Agent 獨立） |
+| `autoPairOnFirstConnect` | 首次連線自動與 Gateway 配對 |
+| `sessionKeyStrategy` | `issue` = 每個 Issue 一個獨立 session |
 
 #### Ed25519 Device Key
 
@@ -442,14 +484,36 @@ OpenClaw Gateway 是 18 個 Agents 執行 AI 任務的核心引擎。
 openssl genpkey -algorithm Ed25519 -out agent_M1.pem
 ```
 
-| 配置項目 | 說明 |
-|---------|------|
-| Key 類型 | Ed25519（橢圓曲線簽章） |
-| 一個 Agent 一把 Key | 每個 Agent 有獨立的 device private key |
-| 自動配對 | Gateway 設定 `autoPairOnFirstConnect`，首次連線自動配對 |
-| Paperclip API URL | `http://paperclip-svc:3100`（Gateway 回寫結果用） |
-
 > **安全提示**：Ed25519 private key 儲存在 Paperclip DB 的 `agents` 表中（`adapter_config` 欄位）。請勿將 key 外洩或在不安全的環境中傳輸。
+
+---
+
+### 步驟 5a：在 OpenClaw Console 與個別 Agent 對話
+
+除了透過 Paperclip Issue 觸發 Agent 外，也可以在 OpenClaw Console（Nerve UI）直接與每個 Agent 對話：
+
+#### 操作步驟
+
+1. 開啟 OpenClaw Console：`https://cindytech1-openclaw.woowtech.io`
+2. 在 Password 欄位輸入 `cindytech`，點擊 **Connect**
+3. 進入 Chat 頁面
+4. 在頂部的 **Agent 下拉選單**中選擇要對話的 Agent（例如 `r1-policy`、`w4-storyteller`）
+5. 在底部的對話框輸入訊息，按 Enter 送出
+6. Agent 會以對應的角色性格回覆
+
+![OpenClaw Agent 選單](images/ch05_07_adapter_config_fields.png)
+
+#### 驗證範例
+
+在 OpenClaw Console 中分別向 3 個 Agent 詢問「你是誰？」的回覆：
+
+| Agent | 回覆摘要 |
+|-------|---------|
+| `w4-storyteller` | 「溫暖而尖銳，像個靠譜的同行者而不是一台打字機器」 |
+| `r3-data` | 「數據趨勢研究員，挖掘 ESG 數據與趨勢情報」 |
+| `m1-editor-chief` | 列出 3 個 ESG 重點主題（ISSB 準則、碳費審議會、AI×ESG）|
+
+> **提示**：OpenClaw Console 適合用於快速測試 Agent 的回應品質、調試 System Prompt、或進行非正式的 ESG 內容諮詢。正式的文章生產流程請使用 Paperclip Issue。
 
 ---
 
@@ -3432,29 +3496,85 @@ openssl pkey -in agent_NEW.pem -pubout -outform DER | base64
 
 ---
 
-### 步驟 8：Gateway API Key 管理
+### 步驟 8：Gateway Workspace 與 API Key 管理
 
-OpenClaw Gateway 使用 `paperclip-claimed-api-key.json` 檔案來儲存 Paperclip API 連線資訊。此檔案位於：
+#### 1:1 Workspace 架構
+
+每個 OpenClaw Agent 擁有獨立的 workspace 目錄，位於 PVC 上：
 
 ```
-/mnt/openclaw-agents/_workspace/paperclip-claimed-api-key.json
+/mnt/openclaw-agents/_workspace-{agentId}/
+├── paperclip-claimed-api-key.json   # API 連線金鑰
+├── .env                              # 環境變數（PAPERCLIP_API_URL）
+└── AGENTS.md                         # Agent 身份標記
 ```
 
-檔案內容格式：
+查看所有 workspace：
+
+```bash
+GW_POD=$(kubectl get pods -n openclaw-tenant-1 -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $GW_POD -c nerve -n openclaw-tenant-1 -- ls /mnt/openclaw-agents/ | grep workspace
+```
+
+#### API Key 檔案格式
+
+每個 workspace 中的 `paperclip-claimed-api-key.json`：
 
 ```json
 {
-  "apiKey": "pcl_esg_xxx",
+  "apiKey": "pk_test_editorial_team_1779960239",
   "apiUrl": "http://paperclip-svc:3100/api"
 }
 ```
 
 | 欄位 | 說明 |
 |------|------|
-| apiKey | Paperclip API 金鑰，格式為 `pcl_esg_` 開頭 |
-| apiUrl | Paperclip API 的內部服務 URL |
+| apiKey | Paperclip Board API 金鑰（所有 Agent 共用） |
+| apiUrl | Paperclip API 的內部服務 URL（**必須是 `paperclip-svc:3100`，不是 `localhost:3100`**） |
 
-> **注意：** 此 API Key 為 Gateway 層級共用的金鑰，所有透過此 Gateway 執行任務的 Agent 都使用相同的 API Key。這也是為什麼 Issue Comment 的作者顯示可能不完全準確的原因（已知限制）。若 API Key 遺失或損壞，Agent 執行任務時會回報「缺少 API Key」錯誤。
+#### 若 API Key 遺失（Pod 重啟後）
+
+Gateway Pod 重啟後，workspace 目錄會保留在 PVC 上，但如果目錄遺失需要重建：
+
+```bash
+GW_POD=$(kubectl get pods -n openclaw-tenant-1 -l app=openclaw-gateway -o jsonpath='{.items[0].metadata.name}')
+
+# 為某個 Agent 重建 workspace
+AGENT_ID="r1-policy"
+kubectl exec $GW_POD -c nerve -n openclaw-tenant-1 -- sh -c "
+  mkdir -p /mnt/openclaw-agents/_workspace-${AGENT_ID}
+  echo '{\"apiKey\": \"pk_test_editorial_team_1779960239\", \"apiUrl\": \"http://paperclip-svc:3100/api\"}' > /mnt/openclaw-agents/_workspace-${AGENT_ID}/paperclip-claimed-api-key.json
+  echo 'PAPERCLIP_API_URL=http://paperclip-svc:3100' > /mnt/openclaw-agents/_workspace-${AGENT_ID}/.env
+"
+```
+
+> **注意**：`apiUrl` 必須使用 K8s 內部 DNS `paperclip-svc:3100`。使用 `localhost:3100` 會導致 Agent 無法連線到 Paperclip API。
+
+---
+
+### 步驟 8a：在 OpenClaw Console 管理 Agent
+
+OpenClaw Console（`https://cindytech1-openclaw.woowtech.io`）提供圖形化介面管理 Agent：
+
+#### 查看 Agent 列表
+
+1. 用密碼 `cindytech` 連線到 Console
+2. 點擊左側 **AGENT** > **Agents**
+3. 頂部下拉選單可看到所有 19 個 Agent（main + 17 ESGTimes + test-poke）
+
+#### 直接與 Agent 對話
+
+1. 點擊左側 **CHAT** > **Chat**
+2. 頂部下拉選單選擇 Agent（例如 `r1-policy`）
+3. 在底部對話框輸入訊息，按 Enter 送出
+4. Agent 會以其角色性格回應
+
+#### 查看 Agent Workspace 檔案
+
+1. 點擊 **Agents** 頁面
+2. 從下拉選單選擇 Agent
+3. 點擊 **Files** 標籤
+4. 可查看 AGENTS.md、SOUL.md 等 workspace 檔案
 
 ---
 
@@ -3570,8 +3690,8 @@ python3 sync-paperclip-to-odoo.py
 |---------|---------|---------|
 | Pod 全部 Running | `kubectl get pods -n openclaw-tenant-1` | 所有 Pod 狀態為 `Running` |
 | OpenClaw Gateway Ready | `kubectl get pods -n openclaw-tenant-1 \| grep gateway` | 顯示 `2/2 Ready` |
-| API Key 檔案存在 | 確認 `/mnt/openclaw-agents/_workspace/paperclip-claimed-api-key.json` | 檔案存在且內容正確 |
-| Adapter Config 正確 | 檢查 adapter_config 中包含 `paperclipApiUrl` | 欄位值指向正確的 API URL |
+| API Key 檔案存在 | 確認每個 workspace 的 `paperclip-claimed-api-key.json`（17 個） | 檔案存在且 `apiUrl` 為 `paperclip-svc:3100` |
+| Adapter Config 正確 | 檢查 adapter_config 包含 `paperclipApiUrl` 和 `agentId` | `paperclipApiUrl` 指向正確 URL，`agentId` 對應 OpenClaw agent |
 | 所有 Agent 狀態正常 | 執行 Agent 狀態查詢 SQL | 所有 Agent 為 `idle`（無異常 `error` 或長時間 `running`） |
 | Issue 計數器正確 | 建立測試 Issue 確認編號連續 | 新 Issue 編號為上一個 +1 |
 
@@ -3579,10 +3699,65 @@ python3 sync-paperclip-to-odoo.py
 
 - [ ] `kubectl get pods` 全部 Running
 - [ ] OpenClaw Gateway 2/2 Ready
-- [ ] `paperclip-claimed-api-key.json` 存在
-- [ ] `adapter_config` 包含 `paperclipApiUrl`
+- [ ] 每個 Agent 的 workspace 目錄存在（`_workspace-{agentId}`）
+- [ ] 每個 workspace 的 `paperclip-claimed-api-key.json` 存在且 `apiUrl` 為 `paperclip-svc:3100`
+- [ ] `adapter_config` 包含 `paperclipApiUrl` 和 `agentId`
 - [ ] All agents status = idle
 - [ ] Issue counter 正確
+- [ ] OpenClaw Console Agents 下拉選單顯示 19 個 Agent
+
+---
+
+## 附錄：商用企業級測試結果
+
+### 測試概述
+
+2026 年 5 月 30 日執行的 17-Agent 全覆蓋測試，使用真實 ESG 企業場景驗證系統的商用部署品質。
+
+### 測試結果（CMP-130 ~ CMP-149）
+
+| Issue | Agent | OpenClaw ID | 內容品質 |
+|-------|-------|-------------|---------|
+| CMP-130 | R1 政策法規研究員 | `r1-policy` | ✅ CSRD 素材包（ESRS 準則+台灣影響） |
+| CMP-131 | R2 企業案例研究員 | `r2-enterprise` | ✅ 台積電 ESG 案例（RE100/SBTi/供應鏈） |
+| CMP-132 | R3 數據趨勢研究員 | `r3-data` | ✅ 全球能源轉型 Top3 報告 |
+| CMP-133 | R4 國際媒體掃描員 | `r4-international` | ✅ 國際 ESG 新聞 Top5 |
+| CMP-134 | R5 台灣在地線人 | `r5-taiwan` | ✅ 台灣 5-6 月動態 Top5 |
+| CMP-135 | W1 新聞記者風 | `w1-news` | ✅ 碳費新聞報導（倒三角+3標題+meta） |
+| CMP-136 | W2 知識型教師風 | `w2-teacher` | ✅ 碳盤查教學（5步驟+比喻） |
+| CMP-137 | W3 學術分析師風 | `w3-analyst` | ✅ ISSB vs GRI 深度分析（Executive Summary） |
+| CMP-138 | W4 說故事風 | `w4-storyteller` | ✅ 台南漁民故事（場景開場+對話） |
+| CMP-139 | W5 意見領袖風 | `w5-opinion` | ✅ ESG 報告漂綠評論（鮮明立場） |
+| CMP-140 | W6 數據新聞風 | `w6-data-news` | ✅ 碳市場價格比較（6國+圖表建議） |
+| CMP-141 | W7 簡潔速讀風 | `w7-quickread` | ✅ CBAM 懶人包（TL;DR+5件事） |
+| CMP-142 | M1 總編輯長 | `m1-editor-chief` | ✅ 6月內容策略（8主題+W/R分配） |
+| CMP-143 | M2 內容主編 | `m2-content-editor` | ✅ 5則素材分配單（W1-W7對應） |
+| CMP-144 | Q1 內容品質審查員 | `q1-quality` | ✅ 退回測試：事實6/結構2/繁中5/數據1 → **退回** |
+| CMP-145 | Q2 ESG專業顧問 | `q2-esg-expert` | ✅ 退回測試：術語2/法規1/標準1 → **退回** |
+| CMP-146 | M3 營運主編 | `m3-ops-editor` | ✅ 週報+發布排程 |
+
+### 驗證通過項目
+
+| 驗證項目 | 結果 |
+|---------|------|
+| 17/17 agents 產出內容 | ✅ 100% |
+| Gateway 1:1 路由正確 | ✅ 每個 agent 路由到對應的 OpenClaw agent |
+| QA 退回機制 | ✅ Q1 總分 3.5/10, Q2 術語 2/法規 1 → 雙雙退回 |
+| 7 種寫作風格差異化 | ✅ 倒三角/教學/分析/故事/評論/數據/懶人包 |
+| Odoo 同步 | ✅ 22 tasks + 76 comments synced |
+| OpenClaw Console 對話 | ✅ 可選擇個別 agent 直接對話，保持角色性格 |
+| Gateway 穩定性 | ✅ 0 crash（使用 15s stagger + 300s cooldown） |
+
+### OpenClaw Console 對話驗證
+
+在 Nerve/OpenClaw Chat 介面中，成功選擇個別 Agent 並進行獨立對話：
+
+| Agent | 問題 | 回覆性格驗證 |
+|-------|------|-------------|
+| `m1-editor-chief` | 「列出3個本月ESG重點主題」 | ✅ 回覆 ISSB 準則、碳費審議會、AI×ESG（策略性思維） |
+| `w4-storyteller` | 「你是誰？」 | ✅ 「溫暖而尖銳，像靠譜的同行者而不是打字機器」 |
+| `r3-data` | 「你是誰？」 | ✅ 「數據趨勢研究員，挖掘 ESG 數據與趨勢情報」 |
+| `q2-esg-expert` | 「你是誰？」 | ✅ 「ESG 專業顧問，專業建議與品質把關」 |
 
 ---
 
